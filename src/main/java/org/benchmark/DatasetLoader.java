@@ -11,151 +11,147 @@ import org.neo4j.driver.Driver;
 import org.neo4j.driver.Session;
 import org.neo4j.driver.Values;
 
-
-
-
 public class DatasetLoader {
 
-    private Driver driver;
-    
+    private final Driver driver;
 
     public DatasetLoader(Driver driver) {
         this.driver = driver;
     }
 
-    public void loadDataset(String filePath,int maxRelationships) {
+    public void loadDataset(String filePath, int maxRelationships) {
 
-    System.out.println("Loading dataset...");
+        System.out.println("=================================");
+        System.out.println("Starting Dataset Load");
+        System.out.println("Target Relationships = " + maxRelationships);
+        System.out.println("=================================");
 
-    final int BATCH_SIZE = 5000;
+        final int BATCH_SIZE = 5000;
 
-    try (
-            BufferedReader br =
-                    new BufferedReader(
-                            new FileReader(filePath));
+        try (
+                BufferedReader br = new BufferedReader(
+                        new FileReader(filePath));
 
-            Session session = driver.session()) {
+                Session session = driver.session()) {
 
-                session.run("""
-                        CREATE INDEX person_id_index IF NOT EXISTS
-                        FOR (p:Person)
-                        ON (p.id)
-                            """).consume();
+            // Create index for faster Person lookup
+            session.run("""
+                    CREATE INDEX person_id_index IF NOT EXISTS
+                    FOR (p:Person)
+                    ON (p.id)
+                    """).consume();
 
-        String line;
+            String line;
 
-        int totalCount = 0;
+            int totalCount = 0;
 
-        List<Map<String,Object>> batch = new ArrayList<>();
+            List<Map<String, Object>> batch = new ArrayList<>();
 
-        long startTime = System.currentTimeMillis();
+            long startTime = System.currentTimeMillis();
 
-        while ((line = br.readLine()) != null) {
+            while ((line = br.readLine()) != null) {
 
-            if (line.startsWith("#")) {
-                continue;
-            }
+                // Skip comments
+                if (line.startsWith("#")) {
+                    continue;
+                }
 
-            String[] parts =
-                    line.trim().split("\\s+");
+                String[] parts = line.trim().split("\\s+");
 
-            if (parts.length < 2) {
-                continue;
-            }
+                if (parts.length < 2) {
+                    continue;
+                }
 
-            int from =
-                    Integer.parseInt(parts[0]);
+                int from = Integer.parseInt(parts[0]);
+                int to = Integer.parseInt(parts[1]);
 
-            int to =
-                    Integer.parseInt(parts[1]);
+                Map<String, Object> row = new HashMap<>();
 
-            Map<String,Object> row =
-                    new HashMap<>();
+                row.put("from", from);
+                row.put("to", to);
 
-            row.put("from", from);
-            row.put("to", to);
+                batch.add(row);
 
-            batch.add(row);
+                /*
+                 * Process batch when:
+                 * 1. Batch reaches 5000 records
+                 * OR
+                 * 2. We have reached the requested relationship count
+                 */
+                if (batch.size() == BATCH_SIZE
+                        || totalCount + batch.size() >= maxRelationships) {
 
-            if (batch.size() == BATCH_SIZE) {
+                    // Prevent loading more than requested
+                    int remaining = maxRelationships - totalCount;
 
-                session.run(
-                        """
-                        UNWIND $rows AS row
+                    if (batch.size() > remaining) {
+                        batch = new ArrayList<>(
+                                batch.subList(0, remaining));
+                    }
 
-                        MERGE (a:Person {id: row.from})
-                        MERGE (b:Person {id: row.to})
+                    if (!batch.isEmpty()) {
 
-                        MERGE (a)-[:FRIEND]->(b)
-                        """,
-                        Values.parameters(
-                                "rows",
-                                batch))
-                        .consume();
+                        session.run(
+                                """
+                                UNWIND $rows AS row
 
-                totalCount += batch.size();
+                                MERGE (a:Person {id: row.from})
+                                MERGE (b:Person {id: row.to})
 
-                System.out.println(
-                        totalCount
-                        + " relationships loaded");
+                                MERGE (a)-[:FRIEND]->(b)
+                                """,
+                                Values.parameters(
+                                        "rows",
+                                        batch))
+                                .consume();
 
-                batch.clear();
+                        totalCount += batch.size();
 
-                // Stop at 100k relationships
-                if(totalCount >= maxRelationships) {
-                    break;
+                        System.out.println(
+                                totalCount
+                                + " relationships loaded");
+
+                        batch.clear();
+                    }
+
+                    // Stop exactly at requested amount
+                    if (totalCount >= maxRelationships) {
+                        break;
+                    }
                 }
             }
+
+            long endTime = System.currentTimeMillis();
+
+            double seconds =
+                    (endTime - startTime) / 1000.0;
+
+            System.out.println();
+            System.out.println("=================================");
+            System.out.println("Dataset Loaded Successfully");
+            System.out.println("=================================");
+
+            System.out.println(
+                    "Relationships = " + totalCount);
+
+            System.out.println(
+                    "Load Time = " + seconds + " sec");
+
+            if (seconds > 0) {
+                System.out.println(
+                        "Relationships/sec = "
+                        + (totalCount / seconds));
+            }
+
+            System.out.println("=================================");
+
+        } catch (Exception e) {
+
+            System.err.println(
+                    "Error while loading dataset:");
+
+            e.printStackTrace();
         }
-        System.out.println(
-        "Dataset Loaded Successfully");
-
-System.out.println(
-        "Relationships = " + totalCount);
-
-long endTime = System.currentTimeMillis();
-
-double seconds =
-        (endTime - startTime) / 1000.0;
-
-System.out.println(
-        "Load Time = " + seconds + " sec");
-
-System.out.println(
-        "Relationships/sec = "
-                + (totalCount / seconds));
-        
-
-        // Remaining records
-        if(!batch.isEmpty()) {
-
-            session.run(
-                    """
-                    UNWIND $rows AS row
-
-                    MERGE (a:Person {id: row.from})
-                    MERGE (b:Person {id: row.to})
-
-                    MERGE (a)-[:FRIEND]->(b)
-                    """,
-                    Values.parameters(
-                            "rows",
-                            batch))
-                    .consume();
-
-            totalCount += batch.size();
-        }
-
-        System.out.println(
-                "Dataset Loaded Successfully");
-
-        System.out.println(
-                "Relationships = "
-                + totalCount);
-
-    } catch (Exception e) {
-        e.printStackTrace();
     }
-}
 }
         
